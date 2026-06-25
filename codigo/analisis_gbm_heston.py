@@ -551,7 +551,7 @@ print("=" * 55)
 # 4. SIMULACIÓN DEL MODELO GBM
 # =============================================================
 
-N_sim = 100000
+N_sim = 10000
 N_dias = len(log_ret)
 dt = 1 / 252
 
@@ -624,7 +624,7 @@ ax.plot(
     color="red",
     linewidth=1.5,
     linestyle="--",
-    label="Media de 100.000 simulaciones GBM"
+    label="Media de 10.000 simulaciones GBM"
 )
 
 ax.set_title(
@@ -754,7 +754,7 @@ ax.hist(
     bins=40,
     color="steelblue",
     alpha=0.7,
-    label="Kurtosis de 100.000 simulaciones GBM"
+    label="Kurtosis de 10.000 simulaciones GBM"
 )
 
 ax.axvline(
@@ -1363,4 +1363,140 @@ plt.savefig(
 )
 
 plt.show()
+# =============================================================
+# 6. CALIBRACIÓN DEL MODELO DE HESTON (con condición de Feller)
+# =============================================================
+
+rho   = -0.7
+kappa =  2.0
+
+media_obj    = log_ret.mean()
+varianza_obj = log_ret.var()
+kurtosis_obj = log_ret.kurt()
+
+# --- Grid grueso ---
+# Con kappa=2.0, Feller exige theta > xi²/4
+# xi ∈ [0.1, 0.3] → theta mínimo razonable ≈ 0.01–0.03
+# Subimos theta y bajamos xi respecto al grid anterior
+
+v0_grid    = [0.01, 0.02, 0.03, 0.04, 0.05]
+theta_grid = [0.03, 0.05, 0.07, 0.10, 0.15]
+xi_grid    = [0.10, 0.15, 0.20, 0.25, 0.30]
+
+mejor_error  = np.inf
+mejor_params = None
+resultados   = []
+
+total = len(v0_grid) * len(theta_grid) * len(xi_grid)
+print(f"Probando {total} combinaciones en la primera calibración...")
+
+combinaciones_validas = 0
+
+for v0 in v0_grid:
+    for theta in theta_grid:
+        for xi in xi_grid:
+
+            # --- FILTRO DE FELLER ---
+            if 2 * kappa * theta <= xi ** 2:
+                continue
+
+            combinaciones_validas += 1
+
+            sim  = simular_heston(
+                mu=mu_anual, v0=v0, kappa=kappa,
+                theta=theta, xi=xi, rho=rho,
+                N_sim=200, N_dias=N_dias, dt=dt
+            )
+            todos = sim.flatten()
+
+            media_sim    = np.mean(todos)
+            varianza_sim = np.var(todos)
+            kurtosis_sim_val = pd.Series(todos).kurt()
+
+            error_media    = ((media_sim    - media_obj)    / media_obj)    ** 2
+            error_varianza = ((varianza_sim - varianza_obj) / varianza_obj) ** 2
+            error_kurtosis = ((kurtosis_sim_val - kurtosis_obj) / kurtosis_obj) ** 2
+
+            error_total = error_media + error_varianza + error_kurtosis
+
+            resultados.append({
+                "v0": v0, "theta": theta, "xi": xi,
+                "feller": round(2 * kappa * theta - xi ** 2, 4),
+                "kurtosis_sim": round(kurtosis_sim_val, 4),
+                "error": round(error_total, 6)
+            })
+
+            if error_total < mejor_error:
+                mejor_error  = error_total
+                mejor_params = (v0, theta, xi)
+
+print(f"Combinaciones que cumplen Feller: {combinaciones_validas}/{total}")
+print(f"\nMejores parámetros (1er nivel):")
+print(f"  v0={mejor_params[0]}, theta={mejor_params[1]}, xi={mejor_params[2]}")
+print(f"  Feller: 2κθ - ξ² = {2*kappa*mejor_params[1] - mejor_params[2]**2:.4f} > 0 ✓")
+print(f"  Error total = {mejor_error:.6f}")
+print(pd.DataFrame(resultados).sort_values("error").head(5).to_string(index=False))
+
+
+# --- Grid refinado alrededor de los mejores parámetros ---
+v0_best, theta_best, xi_best = mejor_params
+
+v0_grid    = [max(0.005, v0_best    + d) for d in [-0.015, -0.01, 0.0, 0.01, 0.015]]
+theta_grid = [max(0.01,  theta_best + d) for d in [-0.02,  -0.01, 0.0, 0.01, 0.02 ]]
+xi_grid    = [max(0.05,  xi_best    + d) for d in [-0.05,  -0.02, 0.0, 0.02, 0.05 ]]
+
+mejor_error  = np.inf
+mejor_params = None
+resultados2  = []
+
+total = len(v0_grid) * len(theta_grid) * len(xi_grid)
+print(f"\nProbando {total} combinaciones en el grid refinado...")
+
+combinaciones_validas2 = 0
+
+for v0 in v0_grid:
+    for theta in theta_grid:
+        for xi in xi_grid:
+
+            # --- FILTRO DE FELLER ---
+            if 2 * kappa * theta <= xi ** 2:
+                continue
+
+            combinaciones_validas2 += 1
+
+            sim  = simular_heston(
+                mu=mu_anual, v0=v0, kappa=kappa,
+                theta=theta, xi=xi, rho=rho,
+                N_sim=200, N_dias=N_dias, dt=dt
+            )
+            todos = sim.flatten()
+
+            media_sim        = np.mean(todos)
+            varianza_sim     = np.var(todos)
+            kurtosis_sim_val = pd.Series(todos).kurt()
+
+            error_media    = ((media_sim    - media_obj)    / media_obj)    ** 2
+            error_varianza = ((varianza_sim - varianza_obj) / varianza_obj) ** 2
+            error_kurtosis = ((kurtosis_sim_val - kurtosis_obj) / kurtosis_obj) ** 2
+
+            error_total = error_media + error_varianza + error_kurtosis
+
+            resultados2.append({
+                "v0": v0, "theta": theta, "xi": xi,
+                "feller": round(2 * kappa * theta - xi ** 2, 4),
+                "kurtosis_sim": round(kurtosis_sim_val, 4),
+                "error": round(error_total, 6)
+            })
+
+            if error_total < mejor_error:
+                mejor_error  = error_total
+                mejor_params = (v0, theta, xi)
+
+print(f"Combinaciones que cumplen Feller: {combinaciones_validas2}/{total}")
+print(f"\nMejores parámetros refinados:")
+print(f"  v0={mejor_params[0]:.4f}, theta={mejor_params[1]:.4f}, xi={mejor_params[2]:.4f}")
+print(f"  rho={rho} (fijo), kappa={kappa} (fijo)")
+print(f"  Feller: 2κθ - ξ² = {2*kappa*mejor_params[1] - mejor_params[2]**2:.4f} > 0 ✓")
+print(f"  Error total = {mejor_error:.6f}")
+print(pd.DataFrame(resultados2).sort_values("error").head(5).to_string(index=False))
 
